@@ -47,7 +47,7 @@ describe("return", function()
          { y = 2, x = 58, msg = "in return value: got <any type>, expected string" }
       }))
 
-      it("expands tuples but not nominals (regression test for #249)", util.check [[
+      it("expands tuples but not nominals (regression test for #249)", util.check([[
          local type A = number
          local type B = record
            h: unionAorB
@@ -62,9 +62,9 @@ describe("return", function()
              assert(false, 'head of A; ' .. n as A)
            end
          end
-      ]])
+      ]]))
 
-      it("flow expected type into return expressions (regression test for #553)", util.check [[
+      it("flow expected type into return expressions (regression test for #553)", util.check([[
          local enum Type
             "add"
             "change"
@@ -76,17 +76,17 @@ describe("return", function()
                    b == 0 and "add"    or
                               "change"
          end
-      ]])
+      ]]))
    end)
 
    describe("module is inferred", function()
-      it("from first use (#334)", util.check [[
+      it("from first use (#334)", util.check([[
          if math.random(2) then
             return "hello"
          else
             return "world"
          end
-      ]])
+      ]]))
 
       it("detects mismatches (#334)", util.check_type_error([[
          if math.random(2) then
@@ -120,6 +120,73 @@ describe("return", function()
          assert.same({}, result.syntax_errors)
          assert.same({}, result.type_errors)
       end)
+
+      it("when exporting type alias (regression test for #586)", function ()
+         util.mock_io(finally, {
+            ["mod.tl"] = [[
+               local record R
+                  n: number
+               end
+               local record Mod
+                  type T = R
+               end
+               local inst: Mod
+               return inst
+            ]],
+            ["merged.tl"] = [[
+               local mod = require("mod")
+               return {
+                  mod = mod
+               }
+            ]],
+            ["foo.tl"] = [[
+               local merged = require("merged")
+               local t: merged.mod.T
+               print(t.n)
+            ]],
+         })
+
+         local tl = require("tl")
+         local result, err = tl.process("foo.tl", assert(tl.init_env()))
+
+         assert.same(nil, err)
+         assert.same({}, result.syntax_errors)
+         assert.same({}, result.type_errors)
+      end)
+   end)
+
+   it("when exporting type alias through multiple levels", function ()
+      util.mock_io(finally, {
+         ["mod.tl"] = [[
+            local record R
+               n: number
+            end
+            local record Mod
+               type T2 = R
+               type T = T2
+            end
+            local inst: Mod
+            return inst
+         ]],
+         ["merged.tl"] = [[
+            local mod = require("mod")
+            return {
+               mod = mod
+            }
+         ]],
+         ["foo.tl"] = [[
+            local merged = require("merged")
+            local t: merged.mod.T
+            print(t.n)
+         ]],
+      })
+
+      local tl = require("tl")
+      local result, err = tl.process("foo.tl", assert(tl.init_env()))
+
+      assert.same(nil, err)
+      assert.same({}, result.syntax_errors)
+      assert.same({}, result.type_errors)
    end)
 
 end)

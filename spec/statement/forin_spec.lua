@@ -2,28 +2,28 @@ local util = require("spec.util")
 
 describe("forin", function()
    describe("ipairs", function()
-      it("with a single variable", util.check [[
+      it("with a single variable", util.check([[
          local t = { 1, 2, 3 }
          for i in ipairs(t) do
             print(i)
          end
-      ]])
+      ]]))
 
-      it("with two variables", util.check [[
+      it("with two variables", util.check([[
          local t = { 1, 2, 3 }
          for i, v in ipairs(t) do
             print(i, v)
          end
-      ]])
+      ]]))
 
-      it("with nested ipairs", util.check [[
+      it("with nested ipairs", util.check([[
          local t = { {"a", "b"}, {"c"} }
          for i, a in ipairs(t) do
             for j, b in ipairs(a) do
                print(i, j, "value: " .. b)
             end
          end
-      ]])
+      ]]))
 
       it("unknown with nested ipairs", util.lax_check([[
          local t = {}
@@ -46,6 +46,8 @@ describe("forin", function()
          end
       ]], {
          { msg = "attempting ipairs loop" },
+         { y = 3, msg = "argument 1: got A (unresolved generic), expected {A}" },
+         { y = 4, msg = "cannot use operator '..' for types string \"value: \" and A (unresolved generic)" },
       }))
    end)
 
@@ -70,25 +72,25 @@ describe("forin", function()
       }))
    end)
 
-   it("with an explicit iterator", util.check [[
+   it("with an explicit iterator", util.check([[
       local function iter(t): number
       end
       local t = { 1, 2, 3 }
       for i in iter, t do
          print(i + 1)
       end
-   ]])
+   ]]))
 
-   it("with an iterator declared as a function type", util.check [[
+   it("with an iterator declared as a function type", util.check([[
       local function it(): function(): string
          return nil
       end
 
       for v in it() do
       end
-   ]])
+   ]]))
 
-   it("with a callable record iterator", util.check [[
+   it("with a callable record iterator", util.check([[
       local record R
          incr: integer
          metamethod __call: function(): integer
@@ -107,7 +109,7 @@ describe("forin", function()
       for i in foo(1) do
          print(i + 0)
       end
-   ]])
+   ]]))
 
    --[=[ -- TODO: check forin iterator arguments
    it("catches wrong call to a wrongly declared callable record iterator", util.check_type_error([[
@@ -183,7 +185,7 @@ describe("forin", function()
    }))
 
    describe("regression tests", function()
-      it("with an iterator declared as a nominal (#183)", util.check [[
+      it("with an iterator declared as a nominal (#183)", util.check([[
          local type Iterator = function(): string
 
          local function it(): Iterator
@@ -192,9 +194,9 @@ describe("forin", function()
 
          for v in it() do
          end
-      ]])
+      ]]))
 
-      it("type inference for variadic return (#237)", util.check [[
+      it("type inference for variadic return (#237)", util.check([[
          local function unpacker<T>(arr: {{T}}): function(): T...
             local i = 0
             return function(): T...
@@ -207,7 +209,7 @@ describe("forin", function()
          for a, b in unpacker{{'a', 'b'}, {'c', 'd'}, {'e', 'f'}} do
             print(a .. b)
          end
-      ]])
+      ]]))
 
       it("accepts nested unresolved values", util.lax_check([[
          local function fun(xss)
