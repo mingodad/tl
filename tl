@@ -55,6 +55,12 @@ do
    end
 end
 
+local function check_collect(i)
+   if i % 50 == 0 then
+      collectgarbage()
+   end
+end
+
 local function printerr(s)
    io.stderr:write(s .. "\n")
 end
@@ -224,7 +230,7 @@ local function type_check_and_load(tlconfig, filename)
    return chunk
 end
 
-local function write_out(tlconfig, result, output_file)
+local function write_out(tlconfig, result, output_file, pp_opts)
    if tlconfig["pretend"] then
       print("Would Write: " .. output_file)
       return
@@ -237,7 +243,7 @@ local function write_out(tlconfig, result, output_file)
    end
 
    local _
-   _, err = ofd:write(tl.pretty_print_ast(result.ast, tlconfig.gen_target) .. "\n")
+   _, err = ofd:write(tl.pretty_print_ast(result.ast, tlconfig.gen_target, pp_opts) .. "\n")
    if err then
       die("error writing " .. output_file .. ": " .. err)
    end
@@ -717,9 +723,7 @@ do
             write_out(tlconfig, result, output_file)
          end
 
-         if i > 1 then
-            collectgarbage()
-         end
+         check_collect(i)
       end
 
       local ok = report_all_errors(tlconfig, env)
@@ -859,6 +863,7 @@ local function get_args_parser()
    local gen_command = parser:command("gen", "Generate a Lua file for one or more Teal files.")
    gen_command:argument("file", "The Teal source file."):args("+")
    gen_command:flag("-c --check", "Type check and fail on type errors.")
+   gen_command:flag("--keep-hashbang", "Preserve hashbang line (#!) at the top of file if present.")
    gen_command:option("-o --output", "Write to <filename> instead.")
               :argname("<filename>")
 
@@ -1184,9 +1189,7 @@ commands["check"] = function(tlconfig, args)
          end
       end
 
-      if i > 1 then
-         collectgarbage()
-      end
+      check_collect(i)
    end
 
    local ok = report_all_errors(tlconfig, env)
@@ -1225,9 +1228,15 @@ commands["gen"] = function(tlconfig, args)
    local results = {}
    local err
    local env
+   local pp_opts
    for i, input_file in ipairs(args["file"]) do
       if not env then
          env = setup_env(tlconfig, input_file)
+         pp_opts = {
+            preserve_indent = true,
+            preserve_newlines = true,
+            preserve_hashbang = args["keep_hashbang"]
+         }
       end
 
       local res = {
@@ -1241,14 +1250,12 @@ commands["gen"] = function(tlconfig, args)
       end
 
       table.insert(results, res)
-      if i > 1 then
-         collectgarbage()
-      end
+      check_collect(i)
    end
 
    for _, res in ipairs(results) do
       if #res.tl_result.syntax_errors == 0 then
-         write_out(tlconfig, res.tl_result, args["output"] or res.output_file)
+         write_out(tlconfig, res.tl_result, args["output"] or res.output_file, pp_opts)
       end
    end
 
@@ -1343,9 +1350,7 @@ do
                tr, trenv = tl.get_types(result, trenv)
             end
          end
-         if i > 1 then
-            collectgarbage()
-         end
+         check_collect(i)
       end
 
       local ok, _, _, w = report_all_errors(tlconfig, env)
