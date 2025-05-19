@@ -35,8 +35,9 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v4
         with:
+          name: playground
           # Upload entire repository
-          path: './playground'
+          path: ./playground
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
