@@ -4,7 +4,8 @@ local util = {
    os_tmp    = win32 and os.getenv("TEMP") or "/tmp",
    os_null   = win32 and "NUL" or "/dev/null",
    os_join   = win32 and " & " or "",
-   os_set    = win32 and "set " or ""
+   os_set    = win32 and "set " or "",
+   os_cat    = win32 and "type " or "cat ",
 }
 
 function util.os_path(path)
@@ -96,6 +97,8 @@ function util.mock_io(finally, filemap)
    assert(type(finally) == "function")
    assert(type(filemap) == "table")
 
+   local io = package.loaded["compat53.module"] and require("compat53.module").io or io
+
    local io_open = io.open
    on_finally(finally, function() io.open = io_open end)
    io.open = function (filename, mode)
@@ -173,9 +176,9 @@ function util.assert_line_by_line(s1, s2)
    batch:assert()
 end
 
-local cmd_prefix = { string.format(util.os_set .. "LUA_PATH=%q" .. util.os_join, package.path) }
+local vars_prefix = { string.format(util.os_set .. "LUA_PATH=%q" .. util.os_join, package.path) }
 for i = 1, 4 do
-   table.insert(cmd_prefix, string.format(util.os_set .. "LUA_PATH_5_%d=%q" .. util.os_join, i, package.path))
+   table.insert(vars_prefix, string.format(util.os_set .. "LUA_PATH_5_%d=%q" .. util.os_join, i, package.path))
 end
 
 local first_arg = 0
@@ -184,9 +187,44 @@ while arg[first_arg - 1] do
 end
 util.lua_interpreter = arg[first_arg]
 
-table.insert(cmd_prefix, util.lua_interpreter) -- Lua interpreter used by Busted
-table.insert(cmd_prefix, tl_executable)
-cmd_prefix = table.concat(cmd_prefix, " ")
+vars_prefix = table.concat(vars_prefix)
+local lua_prefix = util.lua_interpreter .. " " .. tl_executable
+local cmd_prefix = vars_prefix .. " " .. lua_prefix
+
+function util.tl_pipe_cmd(piped, name, ...)
+   assert(name, "no command provided")
+
+   local pre_command_args = {}
+   local first = ...
+   local has_pre_commands = false
+   if type(first) == "table" then
+      pre_command_args = first
+      has_pre_commands = true
+   end
+   local cmd
+   if win32 then
+      cmd = {
+         vars_prefix,
+         piped, " | ",
+         lua_prefix,
+      }
+   else
+      cmd = {
+         piped, " | ",
+         cmd_prefix,
+      }
+   end
+   table.insert(cmd, table.concat(pre_command_args, " "))
+   table.insert(cmd, name)
+   for i = (has_pre_commands and 2) or 1 , select("#", ...) do
+      local a = select(i, ...)
+      if a then
+         table.insert(cmd, string.format("%q", a))
+      end
+   end
+   return table.concat(cmd, " ") .. " "
+end
+
 function util.tl_cmd(name, ...)
    assert(name, "no command provided")
 
@@ -236,15 +274,10 @@ math.randomseed(os.time())
 local function tmp_file_name()
    return util.os_tmp .. util.os_sep .. "teal_tmp" .. math.random(99999999)
 end
-function util.write_tmp_file(finally, content, ext)
+function util.get_tmp_filename(finally, ext)
    assert(type(finally) == "function")
-   assert(type(content) == "string")
 
    local full_name = tmp_file_name() .. "." .. (ext or "tl")
-
-   local fd = assert(io.open(full_name, "wb"))
-   fd:write(content)
-   fd:close()
 
    on_finally(finally, function()
       os.remove(full_name)
@@ -257,6 +290,15 @@ function util.write_tmp_file(finally, content, ext)
       -- Normalize to unix filenames to pass assert_line_by_line
       full_name = full_name:gsub("\\+", "/")
    end
+
+   return full_name
+end
+function util.write_tmp_file(finally, content, ext)
+   local full_name = util.get_tmp_filename(finally, ext)
+
+   local fd = assert(io.open(full_name, "wb"))
+   fd:write(content)
+   fd:close()
 
    return full_name
 end
@@ -386,17 +428,18 @@ local function batch_compare(batch, category, expected, got)
    for i = 1, #expected do
       local e = expected[i] or {}
       local g = got[i] or {}
+      local at = "[" .. (e.line and ("\"" .. e.line .. "\"") or i) .. "]"
       if e.y then
-         batch:add(assert.same, e.y, g.y,  "[" .. i .. "] Expected same y location:")
+         batch:add(assert.same, e.y, g.y, at .. " Expected same y location:")
       end
       if e.x then
-         batch:add(assert.same, e.x, g.x,  "[" .. i .. "] Expected same x location:")
+         batch:add(assert.same, e.x, g.x, at .. " Expected same x location:")
       end
       if e.msg then
-         batch:add(assert.match, e.msg, g.msg or "", 1, true,  "[" .. i .. "] Expected messages to match:")
+         batch:add(assert.match, e.msg, g.msg or "", 1, true, at .. " Expected messages to match:")
       end
       if e.filename then
-         batch:add(assert.match, e.filename, g.filename or "", 1, true,  "[" .. i .. "] Expected filenames to match:")
+         batch:add(assert.match, e.filename, g.filename or "", 1, true, at .. " Expected filenames to match:")
       end
    end
    if #got > #expected then
@@ -426,16 +469,22 @@ local function filter_by(tag, warnings)
    return out
 end
 
-local function check(lax, code, unknowns, gen_target)
+local function check(lax, code, unknowns, gen_target, lang)
    return function()
-      local ast, syntax_errors = tl.parse(code, "foo.lua")
+      local ast, syntax_errors = tl.parse(code, "foo.lua", lang)
       assert.same({}, syntax_errors, "Code was not expected to have syntax errors")
       local batch = batch_assertions()
       local gen_compat
       if gen_target == "5.4" then
          gen_compat = "off"
       end
-      local result = tl.type_check(ast, { filename = "foo.lua", lax = lax, gen_target = gen_target, gen_compat = gen_compat })
+      local result = tl.check(ast, "foo.lua", { feat_lax = lax and "on" or "off", gen_target = gen_target, gen_compat = gen_compat })
+
+      for _, mname in pairs(result.env.loaded_order) do
+         local mresult = result.env.loaded[mname]
+         batch:add(assert.same, {}, mresult.syntax_errors or {}, "Code was not expected to have syntax errors")
+      end
+
       batch:add(assert.same, {}, result.type_errors)
 
       if unknowns then
@@ -456,7 +505,7 @@ local function check_type_error(lax, code, type_errors, gen_target)
       if gen_target == "5.4" then
          gen_compat = "off"
       end
-      local result = tl.type_check(ast, { filename = "foo.tl", lax = lax, gen_target = gen_target, gen_compat = gen_compat })
+      local result = tl.check(ast, "foo.tl", { feat_lax = lax and "on" or "off", gen_target = gen_target, gen_compat = gen_compat })
       local result_type_errors = combine_result(result, "type_errors")
 
       batch_compare(batch, "type errors", type_errors, result_type_errors)
@@ -469,6 +518,13 @@ function util.check(code, gen_target)
    assert(gen_target == nil or type(gen_target) == "string")
 
    return check(false, code, nil, gen_target)
+end
+
+function util.check_lua(code, gen_target)
+   assert(type(code) == "string")
+   assert(gen_target == nil or type(gen_target) == "string")
+
+   return check(false, code, nil, gen_target, "lua")
 end
 
 function util.lax_check(code, unknowns)
@@ -525,7 +581,7 @@ function util.check_syntax_error(code, syntax_errors)
       local batch = batch_assertions()
       batch_compare(batch, "syntax errors", syntax_errors, errors)
       batch:assert()
-      tl.type_check(ast, { filename = "foo.tl", lax = false })
+      tl.check(ast, "foo.tl", { feat_lax = "off" })
    end
 end
 
@@ -535,6 +591,7 @@ function util.check_warnings(code, warnings, type_errors)
 
    return function()
       local result = tl.process_string(code)
+      assert.same({}, result.syntax_errors, "Code was not expected to have syntax errors")
       local batch = batch_assertions()
       batch_compare(batch, "warnings", warnings, result.warnings or {})
       if type_errors then
@@ -544,27 +601,113 @@ function util.check_warnings(code, warnings, type_errors)
    end
 end
 
-local function gen(lax, code, expected, gen_target)
+local function show_keys(arr)
+   local out = {}
+   for k, _ in pairs(arr) do
+      table.insert(out, k)
+   end
+   table.sort(out)
+   return table.concat(out, ", ")
+end
+
+function util.check_types(code, types)
+   assert(type(code) == "string")
+   assert(type(types) == "table")
+
    return function()
       local ast, syntax_errors = tl.parse(code, "foo.tl")
       assert.same({}, syntax_errors, "Code was not expected to have syntax errors")
-      local result = tl.type_check(ast, { filename = "foo.tl", lax = lax, gen_target = gen_target })
-      assert.same({}, result.type_errors)
-      local output_code = tl.pretty_print_ast(ast)
+      local batch = batch_assertions()
+      local env = tl.init_env()
+      env.report_types = true
+      local result = tl.check(ast, "foo.tl", { feat_lax = "off" }, env)
+      batch:add(assert.same, {}, result.type_errors, "Code was not expected to have type errors")
+
+      local tr = env.reporter:get_report()
+      for i, e in ipairs(types) do
+         assert(e.x, "[" .. i .. "] missing 'x' key in test specification")
+         assert(e.y, "[" .. i .. "] missing 'y' key in test specification")
+         assert(e.type, "[" .. i .. "] missing 'type' key in test specification")
+         local info = tr.by_pos["foo.tl"]
+         if not info[e.y] then
+            batch:add(assert.True, false, "[" .. i .. "] No type info for line " .. e.y .. " (has lines " .. show_keys(info) .. ")")
+         end
+         info = info[e.y]
+         if not info[e.x] then
+            batch:add(assert.True, false, "[" .. i .. "] No type info for position " .. e.x .. " in line " .. e.y .. " (has positions " .. show_keys(info) .. ")")
+         end
+         info = info[e.x]
+         if info then
+            info = tr.types[info]
+            batch:add(assert.same, e.type, info.str, "[" .. i .. "] Evaluated type at position " .. e.y .. ":" .. e.x .. " does not match:")
+         end
+      end
+
+      batch:assert()
+      return true
+   end
+end
+
+local function gen(lax, code, expected, gen_target, type_errors)
+   return function()
+      local ast, syntax_errors = tl.parse(code, "foo.tl")
+      assert.same({}, syntax_errors, "Code was not expected to have syntax errors")
+      local gen_compat = gen_target == "5.4" and "off" or nil
+      local result = tl.check(ast, "foo.tl", { feat_lax = lax and "on" or "off", gen_target = gen_target, gen_compat = gen_compat })
+
+      if type_errors then
+         local batch = batch_assertions()
+         local result_type_errors = combine_result(result, "type_errors")
+         batch_compare(batch, "type errors", type_errors, result_type_errors)
+         batch:assert()
+      else
+         assert.same({}, result.type_errors)
+      end
+
+      local output_code = tl.pretty_print_ast(ast, gen_target)
 
       local expected_ast, expected_errors = tl.parse(expected, "foo.tl")
       assert.same({}, expected_errors, "Code was not expected to have syntax errors")
-      local expected_code = tl.pretty_print_ast(expected_ast)
+      local expected_code = tl.pretty_print_ast(expected_ast, gen_target)
 
       assert.same(expected_code, output_code)
    end
 end
 
-function util.gen(code, expected, gen_target)
+function util.gen(code, expected, gen_target, type_errors)
    assert(type(code) == "string")
    assert(type(expected) == "string")
 
-   return gen(false, code, expected, gen_target)
+   return gen(false, code, expected, gen_target, type_errors)
+end
+
+function util.run_check_type_error(...)
+   return util.check_type_error(...)()
+end
+
+function util.run_check(...)
+   return util.check(...)()
+end
+
+function util.run_lax_check(...)
+   return util.lax_check(...)()
+end
+
+function util.check_lines(prelude, testcases)
+   local code = prelude
+   local errs = {}
+   local y = 0
+   for _ in prelude:gmatch("\n") do
+      y = y + 1
+   end
+   for _, testcase in ipairs(testcases) do
+      code = code .. testcase.line .. "\n"
+      y = y + 1
+      if testcase.err then
+         table.insert(errs, { y = y, line = testcase.line, msg = testcase.err })
+      end
+   end
+   return util.check_type_error(code, errs)
 end
 
 return util
